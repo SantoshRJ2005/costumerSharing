@@ -252,7 +252,6 @@ app.post("/login", async (req, res) => {
       name: userType === "customer" ? account.username : "Agency",
       type: userType
     };
-
     res.json({ success: true, message: "Login successful" });
   } catch (err) {
     console.error("Login Error:", err);
@@ -489,45 +488,22 @@ console.log("✅ Rail Graph Built (Transfer Penalty: 0.5 km)");
 // --- END: RAIL GRAPH IMPLEMENTATION ---
 
 // REMOVED: The old stationData definition and unused getRouteDetails function
-
 function parseTime(date, timeString) {
-  if (!timeString) {
-    throw new Error("Booking time is missing");
+  if (!timeString || !/^\d{1,2}:\d{2}$/.test(timeString)) {
+    // Ab yeh sirf "HH:mm" format accept karega
+    throw new Error(`Invalid 24-hour time format. Expected "HH:mm", but got "${timeString}"`);
   }
 
-  // If format is "HH:mm" (24hr)
-  if (/^\d{1,2}:\d{2}$/.test(timeString)) {
-    const [hours, minutes] = timeString.split(":").map(Number);
-    const d = new Date(date);
-    d.setHours(hours, minutes, 0, 0);
-    return d;
-  }
-
-  // If format is "h:mm AM/PM"
-  const parts = timeString.split(" ");
-  if (parts.length !== 2) {
-    throw new Error("Invalid time format, must be 'h:mm AM/PM' or 'HH:mm'");
-  }
-
-  const [time, modifier] = parts;
-  let [hours, minutes] = time.split(":").map(Number);
-
-  if (modifier.toUpperCase() === "PM" && hours < 12) hours += 12;
-  if (modifier.toUpperCase() === "AM" && hours === 12) hours = 0;
-
+  const [hours, minutes] = timeString.split(":").map(Number);
   const d = new Date(date);
   d.setHours(hours, minutes, 0, 0);
   return d;
 }
 
 function formatTime(date) {
-  let hours = date.getHours();
-  let minutes = date.getMinutes();
-  const ampm = hours >= 12 ? 'PM' : 'AM';
-  hours = hours % 12;
-  hours = hours ? hours : 12; // the hour '0' should be '12'
-  minutes = minutes < 10 ? '0' + minutes : minutes;
-  return hours + ':' + minutes + ' ' + ampm;
+  let hours = String(date.getHours()).padStart(2, '0');
+  let minutes = String(date.getMinutes()).padStart(2, '0');
+  return hours + ':' + minutes; // e.g., "09:05" or "15:08"
 }
 
 // NEW FUNCTION: Calculates arrival times based on shortest path
@@ -690,6 +666,198 @@ app.get("/api/search-rides", async (req, res) => {
   }
 });
 
+// UPDATED: To find rides based on a 'from' and 'to' segment and time
+app.get("/api/matched-saved-rides", async (req, res) => {
+  console.log("===== SHARING RIDE SEARCH RECEIVED =====");
+  console.log(req.query);
+  console.log("======================================");
+  try {
+    // 1. Get new query parameters from User 2
+    const { from, to, date, time } = req.query;
+    if (!from || !to || !date || !time) {
+      return res.status(400).json({
+        success: false,
+        message: "'from', 'to', 'date', and 'time' (earliest departure) queries are required."
+      });
+    }
+
+    // 2. Create case-insensitive regex for DB query
+    const fromRegex = new RegExp(`^${from.trim()}$`, "i");
+    const toRegex = new RegExp(`^${to.trim()}$`, "i");
+
+    // Parse User 2's desired departure time (using new 24hr parseTime)
+    let userDesiredDeparture;
+    try {
+      userDesiredDeparture = parseTime(date, time);
+    } catch (e) {
+      return res.status(400).json({ success: false, message: e.message });
+    }
+
+    // 3. Initial DB query: Find rides on the same day that contain BOTH stations
+    const matchedCandidates = await Booking.find({
+      bookingType: "schedule_and_save",
+      status: { $nin: ["cancelled", "completed"] },
+      date: date, // Filter by the exact date
+      "stations.name": { $all: [fromRegex, toRegex] } // Find docs that contain BOTH stations
+    }).sort({ time: 1 }).limit(50); // Sort by the ride's main start time
+
+    if (!matchedCandidates.length) {
+      return res.json({ success: true, rides: [] }); // No candidates found
+    }
+
+    // 4. Post-processing: Filter candidates by station ORDER and TIME
+    const fromStationLower = from.trim().toLowerCase();
+    const toStationLower = to.trim().toLowerCase();
+
+    const validMatches = matchedCandidates.filter(booking => {
+      try {
+        let fromIndex = -1;
+        let toIndex = -1;
+
+        // Find the indices of User 2's 'from' and 'to' stations
+        for (let i = 0; i < booking.stations.length; i++) {
+          const stationNameLower = booking.stations[i].name.toLowerCase();
+          if (stationNameLower === fromStationLower) {
+            fromIndex = i;
+          }
+          if (stationNameLower === toStationLower) {
+            toIndex = i;
+          }
+        }
+
+        // Check 1: Order must be correct ('from' must come before 'to')
+        if (fromIndex === -1 || toIndex === -1 || fromIndex >= toIndex) {
+          return false;
+        }
+
+        // Check 2: Time must be compatible
+        // Get the ride's *actual* departure time from User 2's 'from' station
+        // This will now use the new 24hr-only parseTime
+        const rideDepartureAtFrom = parseTime(booking.date, booking.stations[fromIndex].time);
+
+        // The ride is valid if its departure from that station is *at or after* User 2's desired time
+        return rideDepartureAtFrom >= userDesiredDeparture;
+
+      } catch (e) {
+        // This will catch errors if database data is still "AM/PM"
+        console.warn(`Error filtering booking ${booking.bookingId} (Check for AM/PM data):`, e.message);
+        return false;
+      }
+    });
+
+    // 5. Enrich the valid results
+    const results = await Promise.all(validMatches.map(async (b) => {
+      let agency = null;
+      let vehicle = null;
+      try { agency = b.agencyId ? await Agencies.findById(b.agencyId).select("agencyName oprateStation email phone") : null; } catch (e) { }
+      try { vehicle = b.vehicleId ? await Vehicle.findById(b.vehicleId).select("vehicle_name vehicle_type model rate_per_km max_capacity") : null; } catch (e) { }
+      return {
+        bookingId: b.bookingId,
+        parentBookingId: b._id,
+        from: b.from,
+        to: b.to,
+        date: b.date,
+        time: b.time,
+        stations: b.stations,
+        totalDistance: b.totalDistance,
+        fare: b.fare,
+        agency: agency ? { id: agency._id, name: agency.agencyName, address: agency.oprateStation, phone: agency.phone } : null,
+        vehicle: vehicle,
+        postedBy: b.customerName || b.customerEmail || null,
+        status: b.status
+      };
+    }));
+
+    res.json({ success: true, rides: results });
+  } catch (err) {
+    console.error("Error fetching matched saved rides:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// ====== Join a saved ride (create a join request referencing parent saved ride) ======
+app.post("/api/join-saved-ride", async (req, res) => {
+  try {
+    if (!req.session.user) return res.status(401).json({ success: false, message: "Not logged in" });
+
+const { parentBookingId, pickupAddress, area, city, userFrom, userTo, userDistance, calculatedFare } = req.body;
+    if (!parentBookingId || !pickupAddress) return res.status(400).json({ success: false, message: "Missing required fields" });
+
+    const parent = await Booking.findById(parentBookingId);
+    if (!parent) return res.status(404).json({ success: false, message: "Parent saved ride not found" });
+
+    // create a new booking as a join request. keep reference to parent
+    const bookingId = await getNextBookingId();
+
+    const newBooking = new Booking({
+      bookingId,
+      parentBookingId: parent._id,
+      from: userFrom || parent.from,
+      to: userTo || parent.to,
+      pickupAddress,
+      bookingType: "join_request",
+      date: parent.date,
+time: formatTime(new Date()), 
+       area: area || "",
+      city: city || "",
+      customerName: req.session.user.name,
+      customerEmail: req.session.user.email,
+      mobile: req.session.user.phone,
+      stations: parent.stations, // copy for visibility
+      totalDistance: parseFloat(userDistance) || parent.totalDistance, // Save user's distance, fallback to parent's
+      agencyId: parent.agencyId, // <-- Copied from parent
+      vehicleId: parent.vehicleId,
+      fare: parseFloat(calculatedFare) || 0, // Send the calculated fare
+      status: "join_requested"
+    });
+
+    await newBooking.save();
+
+    // optionally notify agency or ride owner via email (basic example)
+    if (parent.agencyId) {
+      try {
+        const agency = await Agencies.findById(parent.agencyId);
+        if (agency && agency.email) {
+          await transporter.sendMail({
+            from: 'sharingyatra@gmail.com',
+            to: agency.email,
+            subject: `New join request for ${parent.bookingId}`,
+            text: `User ${req.session.user.name || req.session.user.email} requested to join ride ${parent.bookingId} on ${parent.date} ${parent.time}. BookingId: ${bookingId}`
+          });
+        }
+      } catch (mailErr) {
+        console.warn("Could not send join notification email:", mailErr);
+      }
+    }
+
+    res.status(201).json({ success: true, message: "Join request sent", bookingId: newBooking.bookingId });
+  } catch (err) {
+    console.error("Join saved ride error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+// REPLACE your old /api/my-bookings route with this one
+
+// --- API: Fetch Recent Bookings for Current User ---
+app.get("/api/recent-bookings", async (req, res) => {
+  try {
+    if (!req.session.user) {
+      return res.status(401).json({ success: false, message: "Not logged in" });
+    }
+
+    const { email: customerEmail, name: customerName } = req.session.user;
+
+    const bookings = await Booking.find({ customerEmail })
+      .sort({ date: -1, time: -1 }) // latest first
+      .limit(5)
+      .lean();
+
+    res.json({ success: true, customerName, bookings });
+  } catch (err) {
+    console.error("Error fetching bookings:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 
 // ====== Booking API ======
@@ -747,7 +915,7 @@ app.post("/api/bookings", async (req, res) => {
       totalDistance: parseFloat(totalDistance) || parseFloat(totalPhysicalDistance.toFixed(2)),
       agencyId,
       vehicleId,
-      fare,
+      fare: parseFloat(fare) || 0,
       status: "pending"
     });
 
@@ -763,7 +931,6 @@ app.post("/api/bookings", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
 
 
 const PORT = process.env.PORT || 5000;
