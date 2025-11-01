@@ -35,22 +35,29 @@ app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ====== MongoDB Setup ======
+// FIX: Removed deprecated 'useNewUrlParser'
 mongoose
   .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
     useUnifiedTopology: true,
   })
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
 // ====== Booking ID Helper ======
+// FIX: Added try...catch block to handle database errors
 async function getNextBookingId() {
-  const counter = await Counter.findOneAndUpdate(
-    { id: "booking_seq" },
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true }
-  );
-  return "BO113" + counter.seq; // e.g., BO1112
+  try {
+    const counter = await Counter.findOneAndUpdate(
+      { id: "booking_seq" },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+    return "BO113" + counter.seq;
+  } catch (error) {
+    console.error("Error in getNextBookingId:", error);
+    // Re-throw the error to be caught by the API route
+    throw new Error("Failed to generate booking ID.");
+  }
 }
 
 // ====== Email Transporter ======
