@@ -5,16 +5,16 @@ const cors = require('cors');
 // const bodyParser = require('body-parser'); // No longer needed
 const path = require('path');
 const fs = require("fs");
-const Agencies = require('../models/Agencies');
-const Vehicle = require('../models/Vehicles');
-const User = require("../models/User");
-const OTP = require("../models/OTP");
-const Counter = require("../models/Counter");
-const Booking = require("../models/Booking");
+const Agencies = require('./models/Agencies');
+const Vehicle = require('./models/Vehicles');
+const User = require("./models/User");
+const OTP = require("./models/OTP");
+const Counter = require("./models/Counter");
+const Booking = require("./models/Booking");
 const rateLimit = require('express-rate-limit');
 const session = require("express-session");
 const MongoStore = require("connect-mongo");
-const Driver = require("../models/Driver");
+const Driver = require("./models/Driver");
 require("dotenv").config();
 
 const app = express();
