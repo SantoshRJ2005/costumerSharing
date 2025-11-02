@@ -635,7 +635,7 @@
 
             distanceDisplay.textContent = 'Calculating...';
             try {
-                const response = await fetch(`http://localhost:5000/api/distance?from=${encodeURIComponent(fromValue)}&to=${encodeURIComponent(toValue)}`);
+                const response = await fetch(`/api/distance?from=${encodeURIComponent(fromValue)}&to=${encodeURIComponent(toValue)}`);
                 if (!response.ok) { throw new Error('Route not found.'); }
                 const result = await response.json();
                 const distance = result.totalDistance;
