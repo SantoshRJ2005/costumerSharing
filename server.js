@@ -233,10 +233,10 @@ app.post("/login", async (req, res) => {
     let account = await User.findOne({ email });
     let userType = "customer";
 
-    if (!account) {
-     account = await Agencies.findOne({ agencyEmail: email });
-      userType = "agency";
-    }
+    // if (!account) {
+    //  account = await Agencies.findOne({ agencyEmail: email });
+    //   userType = "agency";
+    // }
 
     if (!account) {
       return res.status(400).json({ success: false, message: "Account not found" });
@@ -250,7 +250,7 @@ app.post("/login", async (req, res) => {
       id: account._id,
       email: account.email,
       phone: account.phone,
-      name: userType === "customer" ? account.username : "Agency",
+     // name: userType === "customer" ? account.username : "Agency",
       type: userType
     };
     res.json({ success: true, message: "Login successful" });
