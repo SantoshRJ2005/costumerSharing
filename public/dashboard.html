@@ -314,7 +314,7 @@
     // This replaces the emoji icons with clean SVGs
     async function loadRecentBookings() {
       try {
-        const res = await fetch("http://localhost:5000/api/recent-bookings", {
+        const res = await fetch("/api/recent-bookings", {
             method: "GET",
             credentials: "include"
         });
