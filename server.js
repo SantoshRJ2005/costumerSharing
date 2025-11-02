@@ -234,7 +234,7 @@ app.post("/login", async (req, res) => {
     let userType = "customer";
 
     if (!account) {
-      account = await Agencies.findOne({ email });
+     account = await Agencies.findOne({ agencyEmail: email });
       userType = "agency";
     }
 
